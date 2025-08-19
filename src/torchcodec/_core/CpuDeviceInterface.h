@@ -58,7 +58,7 @@ class CpuDeviceInterface : public DeviceInterface {
 
   // Used to know whether a new FilterGraphContext or UniqueSwsContext should
   // be created before decoding a new frame.
-  DecodedFrameContext prevFrameContext_;
+  FiltersContext prevFrameContext_;
 };
 
 } // namespace facebook::torchcodec

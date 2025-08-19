@@ -70,13 +70,21 @@ void CpuDeviceInterface::convertAVFrameToFrameOutput(
   // conversion objects as much as possible for performance reasons.
   enum AVPixelFormat frameFormat =
       static_cast<enum AVPixelFormat>(avFrame->format);
-  auto frameContext = DecodedFrameContext{
-      avFrame->width,
-      avFrame->height,
-      frameFormat,
-      avFrame->sample_aspect_ratio,
-      expectedOutputWidth,
-      expectedOutputHeight};
+  FiltersContext filtersContext;
+
+  filtersContext.inputWidth = avFrame->width;
+  filtersContext.inputHeight = avFrame->height;
+  filtersContext.inputFormat = frameFormat;
+  filtersContext.inputAspectRatio = avFrame->sample_aspect_ratio;
+  filtersContext.outputFormat = AV_PIX_FMT_RGB24;
+  filtersContext.timeBase = timeBase;
+
+  std::stringstream filters;
+  filters << "scale=" << expectedOutputWidth << ":"
+          << expectedOutputHeight;
+  filters << ":sws_flags=bilinear";
+
+  filtersContext.filters = filters.str();
 
   // By default, we want to use swscale for color conversion because it is
   // faster. However, it has width requirements, so we may need to fall back
@@ -100,9 +108,9 @@ void CpuDeviceInterface::convertAVFrameToFrameOutput(
     outputTensor = preAllocatedOutputTensor.value_or(allocateEmptyHWCTensor(
         expectedOutputHeight, expectedOutputWidth, torch::kCPU));
 
-    if (!swsContext_ || prevFrameContext_ != frameContext) {
-      createSwsContext(frameContext, avFrame->colorspace);
-      prevFrameContext_ = frameContext;
+    if (!swsContext_ || prevFiltersContext_ != filtersContext) {
+      createSwsContext(filtersContext, avFrame->colorspace);
+      prevFiltersContext_ = filtersContext;
     }
     int resultHeight =
         convertAVFrameToTensorUsingSwsScale(avFrame, outputTensor);
@@ -118,9 +126,9 @@ void CpuDeviceInterface::convertAVFrameToFrameOutput(
 
     frameOutput.data = outputTensor;
   } else if (colorConversionLibrary == ColorConversionLibrary::FILTERGRAPH) {
-    if (!filterGraphContext_ || prevFrameContext_ != frameContext) {
-      filterGraphContext_ = std::make_unique<FilterGraph>(frameContext, videoStreamOptions, timeBase);
-      prevFrameContext_ = frameContext;
+    if (!filterGraphContext_ || prevFiltersContext_ != filtersContext) {
+      filterGraphContext_ = std::make_unique<FilterGraph>(filtersContext, videoStreamOptions);
+      prevFiltersContext_ = filtersContext;
     }
     outputTensor = convertAVFrameToTensorUsingFilterGraph(avFrame);
 
