@@ -162,7 +162,9 @@ void deleter(DLManagedTensor* self) {
   zeMemFree(context->zeCtx, self->dl_tensor.data);
 }
 
-torch::Tensor AVFrameToTensor(const torch::Device& device, AVFrame* frame) {
+torch::Tensor AVFrameToTensor(const torch::Device& device, UniqueAVFrame frame) {
+  TORCH_CHECK_EQ(frame->format, AV_PIX_FMT_VAAPI);
+
   VADRMPRIMESurfaceDescriptor desc{};
 
   VAStatus sts = vaExportSurfaceHandle(
@@ -244,20 +246,12 @@ VADisplay getVaDisplayFromAV(UniqueAVFrame& avFrame) {
 
 torch::Tensor XpuDeviceInterface::convertAVFrameToTensorUsingFilterGraph(
     const UniqueAVFrame& avFrame) {
-  int status = av_buffersrc_write_frame(
-      filterGraphContext_.sourceContext, avFrame.get());
-  TORCH_CHECK(
-      status >= AVSUCCESS, "Failed to add frame to buffer source context");
+  timeUniqueAVFrame filteredAVFrame = filterGraphContext_->convert(avFrame);
 
-  UniqueAVFrame filteredAVFrame(av_frame_alloc());
-  status = av_buffersink_get_frame(
-      filterGraphContext_.sinkContext, filteredAVFrame.get());
-  printf(">>> DVROGOZH: aaa: 1\n");
   TORCH_CHECK_EQ(filteredAVFrame->format, AV_PIX_FMT_VAAPI);
-  printf(">>> DVROGOZH: aaa: 2\n");
 
   AVFrame* filteredAVFramePtr = filteredAVFrame.release();
-  return AVFrameToTensor(device_, filteredAVFramePtr);
+  return AVFrameToTensor(device_, std::move(filteredAVFrame));
 }
 
 void XpuDeviceInterface::convertAVFrameToFrameOutput(
@@ -303,163 +297,38 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
   // conversion objects as much as possible for performance reasons.
   enum AVPixelFormat frameFormat =
       static_cast<enum AVPixelFormat>(avFrame->format);
-  //AVHWFramesContext* hwfc = (AVHWFramesContext*)avFrame->hw_frames_ctx->data;
-  auto frameContext = DecodedFrameContext{
-      avFrame->width,
-      avFrame->height,
-      frameFormat,
-      avFrame->sample_aspect_ratio,
-      width,
-      height,
-      avFrame->hw_frames_ctx};
- 
+  FiltersContext filtersContext;
+
+  filtersContext.inputWidth = avFrame->width;
+  filtersContext.inputHeight = avFrame->height;
+  filtersContext.inputFormat = frameFormat;
+  filtersContext.inputAspectRatio = avFrame->sample_aspect_ratio;
+  // Actual output color format will be set via filter options
+  filtersContext.outputFormat = AV_PIX_FMT_VAAPI;
+  filtersContext.timeBase = timeBase;
+  filtersContext.hwFramesCtx.reset(av_buffer_ref(avFrame->hw_frames_ctx));
+
+  std::stringstream filters;
+  filters << "scale_vaapi=" << expectedOutputWidth << ":"
+          << expectedOutputHeight;
+  filters << ":format=rgba"; //:out_color_matrix=bt709:out_range=tv";
+
+
   if (!filterGraphContext_.filterGraph || prevFrameContext_ != frameContext) {
-      createFilterGraph(frameContext, videoStreamOptions, timeBase);
-      prevFrameContext_ = frameContext;
+      createFilterGraph(filtersContext, videoStreamOptions);
+      prevFiltersContext_ = filtersContext;
   }
     
   // We convert input to the RGBX color format with VAAPI getting WxHx4
   // tensor on the output.
-  torch::Tensor dst_rgb4 = convertAVFrameToTensorUsingFilterGraph(avFrame);
+  torch::Tensor dst_rgb4 = AVFrameToTensor(device_, filterGraphContext_->convert(avFrame));
   dst.copy_(dst_rgb4.narrow(2, 0, 3));
 
   auto end = std::chrono::high_resolution_clock::now();
 
   std::chrono::duration<double, std::micro> duration = end - start;
-  VLOG(9) << "NPP Conversion of frame height=" << height << " width=" << width
+  VLOG(9) << "Conversion of frame height=" << height << " width=" << width
           << " took: " << duration.count() << "us" << std::endl;
-}
-
-void XpuDeviceInterface::createFilterGraph(
-    const DecodedFrameContext& frameContext,
-    [[maybe_unused]] const VideoStreamOptions& videoStreamOptions,
-    const AVRational& timeBase) {
-  filterGraphContext_.filterGraph.reset(avfilter_graph_alloc());
-  TORCH_CHECK(filterGraphContext_.filterGraph.get() != nullptr);
-
-  /*if (videoStreamOptions.ffmpegThreadCount.has_value()) {
-    filterGraphContext_.filterGraph->nb_threads =
-        videoStreamOptions.ffmpegThreadCount.value();
-  }*/
-
-  /*int status = avfilter_graph_set_hw_device(filterGraphContext_.filterGraph, ctx_);
-  TORCH_CHECK(
-      status >= 0,
-      "Failed to set hw device for filter graph: ",
-      getFFMPEGErrorStringFromErrorCode(status));  */
-
-  const AVFilter* buffersrc = avfilter_get_by_name("buffer");
-  const AVFilter* buffersink = avfilter_get_by_name("buffersink");
-
-  std::stringstream filterArgs;
-  filterArgs << "video_size=" << frameContext.decodedWidth << "x"
-             << frameContext.decodedHeight;
-  filterArgs << ":pix_fmt=" << frameContext.decodedFormat;
-  filterArgs << ":time_base=" << timeBase.num << "/" << timeBase.den;
-  filterArgs << ":pixel_aspect=" << frameContext.decodedAspectRatio.num << "/"
-             << frameContext.decodedAspectRatio.den;
-
-  printf(">>> %s, AV_PIX_FMT_VAAPI=%d\n", filterArgs.str().c_str(), AV_PIX_FMT_VAAPI);
-
-  int status = avfilter_graph_create_filter(
-      &filterGraphContext_.sourceContext,
-      buffersrc,
-      "in",
-      filterArgs.str().c_str(),
-      nullptr,
-      filterGraphContext_.filterGraph.get());
-  TORCH_CHECK(
-      status >= 0,
-      "Failed to create filter graph: ",
-      filterArgs.str(),
-      ": ",
-      getFFMPEGErrorStringFromErrorCode(status));
-
-  printf(">>> &filterGraphContext_.sourceContext=%p\n",
-	(void*)filterGraphContext_.sourceContext);
-  //printf(">>> &filterGraphContext_.sourceContext=%p\n",
-  //      filterGraphContext_.sourceContext);
-
-  AVBufferSrcParameters* params = av_buffersrc_parameters_alloc();
-  params->format = frameContext.decodedFormat;
-  params->width = frameContext.decodedWidth;
-  params->height = frameContext.decodedHeight;
-  params->sample_aspect_ratio = frameContext.decodedAspectRatio;
-  params->time_base = timeBase;
-  params->hw_frames_ctx = av_buffer_ref(frameContext.hw_frames_ctx);  //av_buffer_ref(ctx_);
-  status = av_buffersrc_parameters_set(filterGraphContext_.sourceContext, params);
-  //auto hw_ctx = av_buffer_ref(ctx_);
-  //status = av_opt_set_bin(filterGraphContext_.sourceContext, "hw_device_ctx", (uint8_t*)&hw_ctx, sizeof(hw_ctx), AV_OPT_SEARCH_CHILDREN);
-   TORCH_CHECK(
-      status >= 0, "failed av_buffersrc_parameters_set");
-
-  status = avfilter_graph_create_filter(
-      &filterGraphContext_.sinkContext,
-      buffersink,
-      "out",
-      nullptr,
-      nullptr,
-      filterGraphContext_.filterGraph.get());
-  TORCH_CHECK(
-      status >= 0,
-      "Failed to create filter graph: ",
-      getFFMPEGErrorStringFromErrorCode(status));
-
-  //enum AVPixelFormat pix_fmts[] = {AV_PIX_FMT_RGB24, AV_PIX_FMT_NONE};
-  enum AVPixelFormat pix_fmts[] = {AV_PIX_FMT_VAAPI, AV_PIX_FMT_NONE};
-
-  status = av_opt_set_int_list(
-      filterGraphContext_.sinkContext,
-      "pix_fmts",
-      pix_fmts,
-      AV_PIX_FMT_NONE,
-      AV_OPT_SEARCH_CHILDREN);
-  TORCH_CHECK(
-      status >= 0,
-      "Failed to set output pixel formats: ",
-      getFFMPEGErrorStringFromErrorCode(status));
-
-  UniqueAVFilterInOut outputs(avfilter_inout_alloc());
-  UniqueAVFilterInOut inputs(avfilter_inout_alloc());
-
-  //filterGraphContext_.sourceContext->hw_device_ctx = ctx_;
-  //filterGraphContext_.sinkContext->hw_device_ctx = ctx_;
-
-  outputs->name = av_strdup("in");
-  outputs->filter_ctx = filterGraphContext_.sourceContext;
-  outputs->pad_idx = 0;
-  outputs->next = nullptr;
-  inputs->name = av_strdup("out");
-  inputs->filter_ctx = filterGraphContext_.sinkContext;
-  inputs->pad_idx = 0;
-  inputs->next = nullptr;
-
-  std::stringstream description;
-  description << "scale_vaapi=" << frameContext.expectedWidth << ":"
-              << frameContext.expectedHeight;
-  description << ":format=rgba"; //:out_color_matrix=bt709:out_range=tv";
-
-  AVFilterInOut* outputsTmp = outputs.release();
-  AVFilterInOut* inputsTmp = inputs.release();
-  status = avfilter_graph_parse_ptr(
-      filterGraphContext_.filterGraph.get(),
-      description.str().c_str(),
-      &inputsTmp,
-      &outputsTmp,
-      nullptr);
-  outputs.reset(outputsTmp);
-  inputs.reset(inputsTmp);
-  TORCH_CHECK(
-      status >= 0,
-      "Failed to parse filter description: ",
-      getFFMPEGErrorStringFromErrorCode(status));
-
-  status =
-      avfilter_graph_config(filterGraphContext_.filterGraph.get(), nullptr);
-  TORCH_CHECK(
-      status >= 0,
-      "Failed to configure filter graph: ",
-      getFFMPEGErrorStringFromErrorCode(status));
 }
 
 // inspired by https://github.com/FFmpeg/FFmpeg/commit/ad67ea9
