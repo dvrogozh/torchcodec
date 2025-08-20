@@ -16,6 +16,8 @@ struct FiltersContext {
   int inputHeight = 0;
   AVPixelFormat inputFormat = AV_PIX_FMT_NONE;
   AVRational inputAspectRatio = {0, 0};
+  int outputWidth = 0;
+  int outputHeight = 0;
   AVPixelFormat outputFormat = AV_PIX_FMT_NONE;
 
   std::string filters;

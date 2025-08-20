@@ -13,13 +13,19 @@ extern "C" {
 
 namespace facebook::torchcodec {
 
+bool operator==(const AVRational& lhs, const AVRational& rhs) {
+  return lhs.num == rhs.num && lhs.den == rhs.den;
+}
+
 bool FiltersContext::operator==(
     const FiltersContext& other) {
-  return decodedWidth == other.decodedWidth &&
-      decodedHeight == other.decodedHeight &&
-      decodedFormat == other.decodedFormat &&
+  return inputWidth == other.inputWidth &&
+      inputHeight == other.inputHeight &&
+      inputFormat == other.inputFormat &&
+      outputWidth == other.outputWidth &&
+      outputHeight == other.outputHeight &&
+      outputFormat == other.outputFormat &&
       filters == other.filters &&
-      expectedFormat == other.expectedFormat &&
       timeBase == other.timeBase &&
       hwFramesCtx.get() == other.hwFramesCtx.get();
 }
@@ -44,13 +50,13 @@ FilterGraph::FilterGraph(
   const AVFilter* buffersink = avfilter_get_by_name("buffersink");
 
   std::stringstream filterArgs;
-  filterArgs << "video_size=" << filtersContext.decodedWidth << "x"
-             << filtersContext.decodedHeight;
-  filterArgs << ":pix_fmt=" << filtersContext.decodedFormat;
+  filterArgs << "video_size=" << filtersContext.inputWidth << "x"
+             << filtersContext.inputHeight;
+  filterArgs << ":pix_fmt=" << filtersContext.inputFormat;
   filterArgs << ":time_base=" << filtersContext.timeBase.num << "/"
 	     << filtersContext.timeBase.den;
-  filterArgs << ":pixel_aspect=" << filtersContext.decodedAspectRatio.num << "/"
-             << filtersContext.decodedAspectRatio.den;
+  filterArgs << ":pixel_aspect=" << filtersContext.inputAspectRatio.num << "/"
+             << filtersContext.inputAspectRatio.den;
 
   int status = avfilter_graph_create_filter(
       &sourceContext_,
@@ -66,15 +72,15 @@ FilterGraph::FilterGraph(
       ": ",
       getFFMPEGErrorStringFromErrorCode(status));
 
-  if (hwFramesCtx) {
+  if (filtersContext.hwFramesCtx) {
     AVBufferSrcParameters* params = av_buffersrc_parameters_alloc();
-    params->format = filtersContext.decodedFormat;
-    params->width = filtersContext.decodedWidth;
-    params->height = filtersContext.decodedHeight;
-    params->sample_aspect_ratio = filtersContext.decodedAspectRatio;
+    params->format = filtersContext.inputFormat;
+    params->width = filtersContext.inputWidth;
+    params->height = filtersContext.inputHeight;
+    params->sample_aspect_ratio = filtersContext.inputAspectRatio;
     params->time_base = filtersContext.timeBase;
-    params->hw_frames_ctx = av_buffer_ref(filtersContext.hwFramesCtx);
-    status = av_buffersrc_parameters_set(filterGraphContext_.sourceContext, params);
+    params->hw_frames_ctx = av_buffer_ref(filtersContext.hwFramesCtx.get());
+    status = av_buffersrc_parameters_set(sourceContext_, params);
     //auto hw_ctx = av_buffer_ref(ctx_);
     //status = av_opt_set_bin(filterGraphContext_.sourceContext, "hw_device_ctx", (uint8_t*)&hw_ctx, sizeof(hw_ctx), AV_OPT_SEARCH_CHILDREN);
     TORCH_CHECK(
@@ -93,7 +99,7 @@ FilterGraph::FilterGraph(
       "Failed to create filter graph: ",
       getFFMPEGErrorStringFromErrorCode(status));
 
-  enum AVPixelFormat pix_fmts[] = {filtersContext.expectedFormat, AV_PIX_FMT_NONE};
+  enum AVPixelFormat pix_fmts[] = {filtersContext.outputFormat, AV_PIX_FMT_NONE};
 
   status = av_opt_set_int_list(
       sinkContext_,
@@ -118,11 +124,14 @@ FilterGraph::FilterGraph(
   inputs->pad_idx = 0;
   inputs->next = nullptr;
 
+
+  printf(">>> dvrogozh: %s\n", filtersContext.filters.c_str());
+
   AVFilterInOut* outputsTmp = outputs.release();
   AVFilterInOut* inputsTmp = inputs.release();
   status = avfilter_graph_parse_ptr(
       filterGraph_.get(),
-      filtersContext.c_str(),
+      filtersContext.filters.c_str(),
       &inputsTmp,
       &outputsTmp,
       nullptr);

@@ -110,7 +110,7 @@ void CpuDeviceInterface::convertAVFrameToFrameOutput(
 
     if (!swsContext_ || prevFiltersContext_ != filtersContext) {
       createSwsContext(filtersContext, avFrame->colorspace);
-      prevFiltersContext_ = filtersContext;
+      prevFiltersContext_ = std::move(filtersContext);
     }
     int resultHeight =
         convertAVFrameToTensorUsingSwsScale(avFrame, outputTensor);
@@ -128,7 +128,7 @@ void CpuDeviceInterface::convertAVFrameToFrameOutput(
   } else if (colorConversionLibrary == ColorConversionLibrary::FILTERGRAPH) {
     if (!filterGraphContext_ || prevFiltersContext_ != filtersContext) {
       filterGraphContext_ = std::make_unique<FilterGraph>(filtersContext, videoStreamOptions);
-      prevFiltersContext_ = filtersContext;
+      prevFiltersContext_ = std::move(filtersContext);
     }
     outputTensor = convertAVFrameToTensorUsingFilterGraph(avFrame);
 
@@ -199,15 +199,15 @@ torch::Tensor CpuDeviceInterface::convertAVFrameToTensorUsingFilterGraph(
 }
 
 void CpuDeviceInterface::createSwsContext(
-    const DecodedFrameContext& frameContext,
+    const FiltersContext& filtersContext,
     const enum AVColorSpace colorspace) {
   SwsContext* swsContext = sws_getContext(
-      frameContext.decodedWidth,
-      frameContext.decodedHeight,
-      frameContext.decodedFormat,
-      frameContext.expectedWidth,
-      frameContext.expectedHeight,
-      AV_PIX_FMT_RGB24,
+      filtersContext.inputWidth,
+      filtersContext.inputHeight,
+      filtersContext.inputFormat,
+      filtersContext.outputWidth,
+      filtersContext.outputHeight,
+      filtersContext.outputFormat,
       SWS_BILINEAR,
       nullptr,
       nullptr,
