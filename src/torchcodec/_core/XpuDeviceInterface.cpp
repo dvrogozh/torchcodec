@@ -103,20 +103,6 @@ AVBufferRef* getVaapiContext(const torch::Device& device) {
 
 } // namespace
 
-bool XpuDeviceInterface::DecodedFrameContext::operator==(
-    const XpuDeviceInterface::DecodedFrameContext& other) {
-  return decodedWidth == other.decodedWidth &&
-      decodedHeight == other.decodedHeight &&
-      decodedFormat == other.decodedFormat &&
-      expectedWidth == other.expectedWidth &&
-      expectedHeight == other.expectedHeight;
-}
-
-bool XpuDeviceInterface::DecodedFrameContext::operator!=(
-    const XpuDeviceInterface::DecodedFrameContext& other) {
-  return !(*this == other);
-}
-
 XpuDeviceInterface::XpuDeviceInterface(const torch::Device& device)
     : DeviceInterface(device) {
   TORCH_CHECK(g_xpu, "XpuDeviceInterface was not registered!");
@@ -162,13 +148,13 @@ void deleter(DLManagedTensor* self) {
   zeMemFree(context->zeCtx, self->dl_tensor.data);
 }
 
-torch::Tensor AVFrameToTensor(const torch::Device& device, UniqueAVFrame frame) {
+torch::Tensor AVFrameToTensor(const torch::Device& device, const UniqueAVFrame& frame) {
   TORCH_CHECK_EQ(frame->format, AV_PIX_FMT_VAAPI);
 
   VADRMPRIMESurfaceDescriptor desc{};
 
   VAStatus sts = vaExportSurfaceHandle(
-      getVaDisplayFromAV(frame),
+      getVaDisplayFromAV(frame.get()),
       (VASurfaceID)(uintptr_t)frame->data[3],
       VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
       VA_EXPORT_SURFACE_READ_ONLY,
@@ -244,16 +230,6 @@ VADisplay getVaDisplayFromAV(UniqueAVFrame& avFrame) {
   return vactx->display;
 }
 
-torch::Tensor XpuDeviceInterface::convertAVFrameToTensorUsingFilterGraph(
-    const UniqueAVFrame& avFrame) {
-  timeUniqueAVFrame filteredAVFrame = filterGraphContext_->convert(avFrame);
-
-  TORCH_CHECK_EQ(filteredAVFrame->format, AV_PIX_FMT_VAAPI);
-
-  AVFrame* filteredAVFramePtr = filteredAVFrame.release();
-  return AVFrameToTensor(device_, std::move(filteredAVFrame));
-}
-
 void XpuDeviceInterface::convertAVFrameToFrameOutput(
     const VideoStreamOptions& videoStreamOptions,
     [[maybe_unused]] const AVRational& timeBase,
@@ -309,19 +285,23 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
   filtersContext.hwFramesCtx.reset(av_buffer_ref(avFrame->hw_frames_ctx));
 
   std::stringstream filters;
-  filters << "scale_vaapi=" << expectedOutputWidth << ":"
-          << expectedOutputHeight;
+  filters << "scale_vaapi=" << width << ":" << height;
   filters << ":format=rgba"; //:out_color_matrix=bt709:out_range=tv";
 
+  filtersContext.filters = filters.str();
 
-  if (!filterGraphContext_.filterGraph || prevFrameContext_ != frameContext) {
-      createFilterGraph(filtersContext, videoStreamOptions);
-      prevFiltersContext_ = filtersContext;
+  if (!filterGraphContext_ || prevFiltersContext_ != filtersContext) {
+      filterGraphContext_ = std::make_unique<FilterGraph>(filtersContext, videoStreamOptions);
+      prevFiltersContext_ = std::move(filtersContext);
   }
     
   // We convert input to the RGBX color format with VAAPI getting WxHx4
   // tensor on the output.
-  torch::Tensor dst_rgb4 = AVFrameToTensor(device_, filterGraphContext_->convert(avFrame));
+  UniqueAVFrame filteredAVFrame = filterGraphContext_->convert(avFrame);
+
+  TORCH_CHECK_EQ(filteredAVFrame->format, AV_PIX_FMT_VAAPI);
+
+  torch::Tensor dst_rgb4 = AVFrameToTensor(device_, filteredAVFrame);
   dst.copy_(dst_rgb4.narrow(2, 0, 3));
 
   auto end = std::chrono::high_resolution_clock::now();
