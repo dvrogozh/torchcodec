@@ -158,6 +158,11 @@ def main() -> None:
                     if torch.cuda.is_available()
                     else "not available"
                 ),
+                "xpu": (
+                    torch.xpu.get_device_properties(0).name
+                    if torch.xpu.is_available()
+                    else "not available"
+                ),
             },
         }
         plot_data(data, args.plot_path)

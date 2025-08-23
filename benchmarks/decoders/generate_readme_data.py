@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import argparse
 import json
 import os
 import platform
@@ -14,6 +15,7 @@ import torch
 
 from benchmark_decoders_library import (
     BatchParameters,
+    check_decoder_support,
     DataLoaderInspiredWorkloadParameters,
     generate_videos,
     retrieve_videos,
@@ -28,6 +30,50 @@ NASA_URL = "https://download.pytorch.org/torchaudio/tutorial-assets/stream-api/N
 
 def main() -> None:
     """Benchmarks the performance of a few video decoders on synthetic videos"""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--decoders",
+        help=(
+            "Comma-separated list of decoders to benchmark. Valid options: cpu, cuda, xpu, torchvision, torchaudio"
+        ),
+        type=str,
+        default=("cpu,cuda,torchvision,torchaudio"),
+    ),
+    parser.add_argument(
+        "--resize_device",
+        help=(
+            "Device for resize. Default: cuda if available, else cpu. Valid options: cpu, cuda, xpu"
+        ),
+        type=str,
+        default=("cuda"),
+    ),
+    args = parser.parse_args()
+
+    # warn if device or module is not available
+    decoder_list = set(args.decoders.split(","))
+    if "xpu" in decoder_list and not check_decoder_support("xpu"):
+        print("Warning: xpu is not available. Test will be skipped.")
+        decoder_list.remove("xpu")
+
+    if "cuda" in decoder_list and not check_decoder_support("cuda"):
+        print("Warning: cuda is not available. Test will be skipped.")
+        decoder_list.remove("cuda")
+
+    if "torchaudio" in decoder_list and not check_decoder_support("torchaudio"):
+        print("Warning: torchaudio is not available. Test will be skipped.")
+        decoder_list.remove("torchaudio")
+
+    if "torchvision" in decoder_list and not check_decoder_support("torchvision"):
+        print("Warning: torchvision is not available. Test will be skipped.")
+        decoder_list.remove("torchvision")
+
+    resize_device = args.resize_device
+    if resize_device == "cuda" and not torch.cuda.is_available():
+        resize_device = "cpu"
+    if resize_device == "xpu" and not torch.xpu.is_available():
+        resize_device = "cpu"
+    print(f"resize_device = {resize_device}")
 
     videos_dir_path = "/tmp/torchcodec_benchmarking_videos"
     if not os.path.exists(videos_dir_path):
@@ -60,15 +106,27 @@ def main() -> None:
         retrieve_videos(urls_and_dest_paths)
 
     decoder_dict = {}
-    decoder_dict["torchcodec"] = TorchCodecPublic()
-    decoder_dict["torchcodec[approx]"] = TorchCodecPublic(seek_mode="approximate")
-    if torch.cuda.is_available():
+    if "cpu" in decoder_list:
+        decoder_dict["torchcodec"] = TorchCodecPublic()
+        decoder_dict["torchcodec[approx]"] = TorchCodecPublic(seek_mode="approximate")
+
+    if "cuda" in decoder_list:
         decoder_dict["torchcodec[cuda]"] = TorchCodecPublic(device="cuda")
         decoder_dict["torchcodec[cuda,approx]"] = TorchCodecPublic(
             device="cuda", seek_mode="approximate"
         )
-    decoder_dict["torchvision[video_reader]"] = TorchVision("video_reader")
-    decoder_dict["torchaudio"] = TorchAudioDecoder()
+
+    if "xpu" in decoder_list:
+        decoder_dict["torchcodec[xpu]"] = TorchCodecPublic(device="xpu")
+        decoder_dict["torchcodec[xpu,approx]"] = TorchCodecPublic(
+            device="xpu", seek_mode="approximate"
+        )
+
+    if "torchvision" in decoder_list:
+        decoder_dict["torchvision[video_reader]"] = TorchVision("video_reader")
+
+    if "torchaudio" in decoder_list:
+        decoder_dict["torchaudio"] = TorchAudioDecoder()
 
     # These are the number of uniform seeks we do in the seek+decode benchmark.
     num_samples = 10
@@ -85,7 +143,7 @@ def main() -> None:
             batch_parameters=BatchParameters(batch_size=50, num_threads=10),
             resize_height=256,
             resize_width=256,
-            resize_device="cuda" if torch.cuda.is_available() else "cpu",
+            resize_device=resize_device,
         ),
     )
     data_for_writing = {
@@ -98,6 +156,11 @@ def main() -> None:
             "cuda": (
                 torch.cuda.get_device_properties(0).name
                 if torch.cuda.is_available()
+                else "not available"
+            ),
+            "xpu": (
+                torch.xpu.get_device_properties(0).name
+                if torch.xpu.is_available()
                 else "not available"
             ),
         },
