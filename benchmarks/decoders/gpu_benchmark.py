@@ -8,7 +8,12 @@ import torch
 import torch.utils.benchmark as benchmark
 
 import torchcodec
-import torchvision.transforms.v2.functional as F
+
+try:
+    import torchvision.transforms.v2.functional as F
+except ImportError:
+    print("Error importing torchvision. Exiting.")
+    exit()
 
 RESIZED_WIDTH = 256
 RESIZED_HEIGHT = 256

@@ -126,7 +126,10 @@ def main() -> None:
             options = decoder_registry[decoder].default_options
 
         kind = decoder_registry[decoder].kind
-        decoders_to_run[display] = kind(**options)
+        try:
+            decoders_to_run[display] = kind(**options)
+        except (ImportError, RuntimeError):
+            print(f"Warning: unable to create decoder {decoder}. Test will be skipped.")
 
     video_paths = args.video_paths.split(",")
     if args.video_dir:
