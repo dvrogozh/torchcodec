@@ -8,7 +8,12 @@ import torch
 import torch.utils.benchmark as benchmark
 
 import torchcodec
-import torchvision.transforms.v2.functional as F
+
+try:
+    import torchvision.transforms.v2.functional as F
+except ImportError:
+    print("Error importing torchvision. Exiting.")
+    exit()
 
 RESIZED_WIDTH = 256
 RESIZED_HEIGHT = 256
@@ -27,7 +32,7 @@ def decode_full_video(video_path, decode_device_string, resize_device_string):
     print(f"{decode_device_string=} {resize_device_string=}")
     decoder = torchcodec._core.create_from_file(video_path)
     num_threads = None
-    if "cuda" in decode_device_string:
+    if "cuda" in decode_device_string or "xpu" in decode_device_string:
         num_threads = 1
     width = None
     height = None
@@ -78,6 +83,8 @@ def decode_videos_using_threads(
         actual_decode_device = decode_device_string
         if "cuda" in decode_device_string and use_multiple_gpus:
             actual_decode_device = f"cuda:{i % torch.cuda.device_count()}"
+        if "xpu" in decode_device_string and use_multiple_gpus:
+            actual_decode_device = f"xpu:{i % torch.xpu.device_count()}"
         executor.submit(
             decode_full_video, video_path, actual_decode_device, resize_device_string
         )
@@ -154,10 +161,14 @@ def main():
             if "cuda" in decode_label:
                 # Shorten "cuda:0" to "cuda"
                 decode_label = "cuda"
+            if "xpu" in decode_label:
+                decode_label = "xpu"
             resize_label = resize_device_string
             if "cuda" in resize_device_string:
                 # Shorten "cuda:0" to "cuda"
                 resize_label = "cuda"
+            if "xpu" in resize_device_string:
+                resize_label = "xpu"
             print("decode_device", decode_device_string)
             print("resize_device", resize_device_string)
             if args.num_threads > 1:

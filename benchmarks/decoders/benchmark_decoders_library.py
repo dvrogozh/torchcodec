@@ -603,6 +603,35 @@ class TorchAudioDecoder(AbstractDecoder):
         return frames
 
 
+# check whether specified decoder is supported
+def check_decoder_support(decoder_type):
+    if decoder_type == "cuda":
+        return torch.cuda.is_available()
+
+    if decoder_type == "xpu":
+        return torch.xpu.is_available()
+
+    if decoder_type == "torchaudio":
+        try:
+            import torchaudio  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    if decoder_type == "torchvision":
+        try:
+            # also check whether video_decoder backend is installed
+            import torchvision
+
+            torchvision.set_video_backend("video_reader")
+        except (ImportError, RuntimeError):
+            return False
+        return True
+
+    print(f"Warning: unknown decoder_type {decoder_type}")
+    return False
+
+
 def create_torchcodec_core_decode_first_frame(video_file):
     video_decoder = create_from_file(video_file)
     _add_video_stream(video_decoder)

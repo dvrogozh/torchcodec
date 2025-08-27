@@ -126,7 +126,10 @@ def main() -> None:
             options = decoder_registry[decoder].default_options
 
         kind = decoder_registry[decoder].kind
-        decoders_to_run[display] = kind(**options)
+        try:
+            decoders_to_run[display] = kind(**options)
+        except (ImportError, RuntimeError):
+            print(f"Warning: unable to create decoder {decoder}. Test will be skipped.")
 
     video_paths = args.video_paths.split(",")
     if args.video_dir:
@@ -156,6 +159,11 @@ def main() -> None:
                 "cuda": (
                     torch.cuda.get_device_properties(0).name
                     if torch.cuda.is_available()
+                    else "not available"
+                ),
+                "xpu": (
+                    torch.xpu.get_device_properties(0).name
+                    if torch.xpu.is_available()
                     else "not available"
                 ),
             },
