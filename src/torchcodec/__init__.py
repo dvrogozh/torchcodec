@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os.path as _osp
+from pathlib import Path
 
 # Note: usort wants to put Frame and FrameBatch after decoders and samplers,
 # but that results in circular import.
@@ -18,4 +18,8 @@ try:
 except Exception:
     pass
 
-cmake_prefix_path = _osp.join(_osp.dirname(__file__), "share", "cmake")
+# `torchcodec.cmake_prefix_path` is a Python-based way to programmatically
+# obtain the correct CMAKE_PREFIX_PATH value for the TorchCodec installation.
+# It can be used in a build system of a C++ application to ensure that CMake
+# can successfully find TorchCodec C++ libraries.
+cmake_prefix_path = Path(__file__).parent / "share" / "cmake"

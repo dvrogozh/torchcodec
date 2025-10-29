@@ -22,9 +22,6 @@ from torchcodec._internally_replaced_utils import (  # @manual=//pytorch/torchco
 
 _pybind_ops: Optional[ModuleType] = None
 
-variant = None
-core_library_path = None
-
 def load_torchcodec_shared_libraries():
     # Successively try to load the shared libraries for each version of FFmpeg
     # that we support. We always start with the highest version, working our way
@@ -59,11 +56,7 @@ def load_torchcodec_shared_libraries():
             _pybind_ops = _load_pybind11_module(
                 pybind_ops_module_name, pybind_ops_library_path
             )
-            global variant
-            global core_library_path
-            variant = ffmpeg_major_version
-            core_library_path = decoder_library_path
-            return
+            return ffmpeg_major_version, decoder_library_path
         except Exception as e:
             # TODO: recording and reporting exceptions this way is OK for now as  it's just for debugging,
             # but we should probably handle that via a proper logging mechanism.
@@ -89,7 +82,7 @@ def load_torchcodec_shared_libraries():
     )
 
 
-load_torchcodec_shared_libraries()
+variant, core_library_path = load_torchcodec_shared_libraries()
 
 
 # Note: We use disallow_in_graph because PyTorch does constant propagation of
